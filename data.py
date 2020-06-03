@@ -3,14 +3,14 @@ from typing import Tuple
 
 from convokit import Corpus
 import torch
-from torch import Tensor
+from torch import LongTensor
 from torch.nn import Module
 from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 from transformers import BertTokenizer
 
 
-def conversation_collate_fn(batch: Tuple[Tuple[Tensor, ...], ...]) -> Tuple[Tensor, ...]:
+def conversation_collate_fn(batch: Tuple[Tuple[LongTensor, ...], ...]) -> Tuple[LongTensor, ...]:
     inputs = [data[0] for data in batch]
     flattened_inputs = list(chain.from_iterable([list(input_tensor) for input_tensor in inputs]))
     flattened_word_padded_inputs = pad_sequence(flattened_inputs, batch_first=True)
@@ -38,7 +38,7 @@ class ConversationDataset(Dataset):
     def __len__(self) -> int:
         return len(self.conversation_ids)
 
-    def __getitem__(self, idx: int) -> Tuple[Tensor, ...]:
+    def __getitem__(self, idx: int) -> Tuple[LongTensor, ...]:
         conversation = self.corpus.get_conversation(self.conversation_ids[idx])
         utterances = []
         reply_to_indices = []
@@ -56,7 +56,7 @@ class ConversationDataset(Dataset):
             # transform the list of tokens into a list of token ids
             indexed_tokens = self.tokenizer.convert_tokens_to_ids(tokenized_text)
             # transform the list of tokens into a tensor and append it
-            utterances.append(Tensor(indexed_tokens))
+            utterances.append(LongTensor(indexed_tokens))
             # retrieve the list index of the utterance being replied to
             # set to -1 if there is no utterance being replied to
             if utterance.reply_to is None:
@@ -68,5 +68,5 @@ class ConversationDataset(Dataset):
             utterance_indices[utterance._id] = i
         # transform the utterances and reply_to_indices into tensors
         utterances_tensor = pad_sequence(utterances, batch_first=True)
-        reply_to_indices_tensor = Tensor(reply_to_indices)
+        reply_to_indices_tensor = LongTensor(reply_to_indices)
         return utterances_tensor, reply_to_indices_tensor
