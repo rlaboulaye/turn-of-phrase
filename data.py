@@ -9,7 +9,6 @@ from transformers import PreTrainedTokenizerBase
 
 
 DELETED_KEYWORD = '[deleted]'
-CLASSIFICATION_TOKEN = '[CLS]'
 
 
 class ConversationPath():
@@ -100,7 +99,9 @@ class ConversationPathDataset(Dataset):
         sequence_lengths = []
         for path in conversation_path_neighborhood:
             utterance_ids = path.utterance_ids[:-1] + [target_utterance_id]
-            texts = [CLASSIFICATION_TOKEN + self.corpus.get_utterance(utterance_id).text for utterance_id in utterance_ids]
+            # add conversation title to the text of the first utterance
+            texts = [self.corpus.get_conversation(utterance_ids[0]).retrieve_meta('title') + ' ' + self.corpus.get_utterance(utterance_ids[0]).text]
+            texts.extend([self.corpus.get_utterance(utterance_id).text for utterance_id in utterance_ids[1:]])
             sequence_lengths.append([len(self.tokenizer.tokenize(text)) for text in texts])
             indexed_tokenized_paths.append([self.tokenizer(text, max_length=self.tokenizer.model_max_length, padding='max_length', truncation=True, return_attention_mask=False)['input_ids'] for text in texts])
         path_tensor = torch.LongTensor(indexed_tokenized_paths)
