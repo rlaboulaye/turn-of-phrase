@@ -44,7 +44,11 @@ class ConversationPathDataset(Dataset):
         self.conversation_indices_by_len = [[] for i in range(self.max_len - self.min_len + 1)]
         for conversation in self.corpus.iter_conversations():
             candidates_by_len = [{} for i in range(self.max_len - self.min_len + 1)]
-            conversation.initialize_tree_structure()
+            # skip conversations with reply-to chains that do not form a valid tree
+            try:
+                conversation.initialize_tree_structure()
+            except ValueError:
+                continue
             root = conversation.tree
             self._dfs_conversation_path_traversal(root, [root.utt.id], candidates_by_len)
             for candidates, conversation_indices in zip(candidates_by_len, self.conversation_indices_by_len):
