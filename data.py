@@ -11,6 +11,10 @@ from transformers import PreTrainedTokenizerBase
 DELETED_KEYWORD = '[deleted]'
 
 
+def text_valid(text: str) -> bool:
+    return text is not None and len(text) > 0 and text != DELETED_KEYWORD
+
+
 class ConversationPath():
     """docstring for ConversationPath"""
     def __init__(self, utterance_ids: List[int]) -> None:
@@ -26,13 +30,14 @@ class ConversationPath():
 
 class ConversationPathDataset(Dataset):
     """docstring for ConversationPathDataset"""
-    def __init__(self, corpus: Corpus, tokenizer: PreTrainedTokenizerBase, min_len: int=3, max_len: int=12, n_neighbors: int=3, min_to_common_ancestor: int=2) -> None:
+    def __init__(self, corpus: Corpus, tokenizer: PreTrainedTokenizerBase, min_len: int=3, max_len: int=10, n_neighbors: int=1, min_to_common_ancestor: int=2, max_tokenization_len=256) -> None:
         super(ConversationPathDataset, self).__init__()
         self.corpus = corpus
         self.min_len = min_len
         self.max_len = max_len
         self.n_neighbors = n_neighbors
         self.min_to_common_ancestor = min_to_common_ancestor
+        self.max_tokenization_len = max_tokenization_len
         self.tokenizer = tokenizer
         self._initialize_conversation_paths()
 
@@ -62,9 +67,10 @@ class ConversationPathDataset(Dataset):
 
     def _dfs_conversation_path_traversal(self, utterance_node: UtteranceNode, path: List[int], candidates_by_len: List[Dict[str, ConversationPath]]) -> None:
         path.append(utterance_node.utt.id)
-        if len(path) > self.max_len:
+        if len(path) > self.max_len or not text_valid(utterance_node.utt.text):
             return
-        if len(path) >= self.min_len and self.corpus.get_utterance(path[-1]).text != DELETED_KEYWORD and self.corpus.get_utterance(path[-2]).text != DELETED_KEYWORD:
+        # if len(path) >= self.min_len and text_valid(self.corpus.get_utterance(path[-1]).text) and text_valid(self.corpus.get_utterance(path[-2]).text):
+        if len(path) >= self.min_len:
             conversation_path = ConversationPath(path)
             candidates = candidates_by_len[len(path) - self.min_len]
             for candidate_path in candidates.values():
@@ -108,13 +114,13 @@ class ConversationPathDataset(Dataset):
             texts = [self.corpus.get_conversation(utterance_ids[0]).retrieve_meta('title') + ' ' + self.corpus.get_utterance(utterance_ids[0]).text]
             texts.extend([self.corpus.get_utterance(utterance_id).text for utterance_id in utterance_ids[1:]])
             sequence_lengths.append([len(self.tokenizer.tokenize(text)) for text in texts])
-            encodings = [self.tokenizer(text, max_length=self.tokenizer.model_max_length, padding='max_length', truncation=True) for text in texts]
+            encodings = [self.tokenizer(text, max_length=self.max_tokenization_len, padding='max_length', truncation=True) for text in texts]
             tokenized_paths.append([encoding['input_ids'] for encoding in encodings])
             attention_masks.append([encoding['attention_mask'] for encoding in encodings])
         path_tensor = torch.LongTensor(tokenized_paths)
         attention_mask_tensor = torch.LongTensor(attention_masks)
         sequence_length_tensor = torch.LongTensor(sequence_lengths)
-        target_tensor = torch.LongTensor([1] + [0 for i in range(self.n_neighbors)])
+        target_tensor = torch.LongTensor([0])
         return path_tensor, attention_mask_tensor, sequence_length_tensor, target_tensor
 
 
@@ -152,7 +158,7 @@ def conversation_path_collate_fn(batch: Tuple[Tuple[torch.LongTensor, torch.Floa
     batched_attention_mask_tensor = batched_attention_mask_tensor.reshape(-1, batched_attention_mask_tensor.shape[2], batched_attention_mask_tensor.shape[3])
     batched_sequence_length_tensor = torch.stack(sequence_length_tensors, 0)
     batched_sequence_length_tensor = batched_sequence_length_tensor.reshape(-1, batched_sequence_length_tensor.shape[2])
-    batched_target_tensor = torch.stack(target_tensors, 0)
+    batched_target_tensor = torch.cat(target_tensors, 0)
     # dim = 0 and select [0] element of output to get values, not indices
     max_sequence_length_tensor = batched_sequence_length_tensor.max(0)[0]
     batched_utterance_tensors = []
