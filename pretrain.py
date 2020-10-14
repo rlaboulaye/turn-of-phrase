@@ -133,7 +133,7 @@ def main() -> None:
             is_best = loss < best_loss
             best_loss = min(loss, best_loss)
 
-            run_name = '{}.{}.'.format(args.model_name, args.corpus)
+            run_name = '{}.{}'.format(args.model_name, args.corpus)
 
             save_checkpoint({
                 'step': step,
