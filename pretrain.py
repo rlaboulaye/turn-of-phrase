@@ -35,7 +35,7 @@ parser.add_argument('-g', '--gpu', type=int, default=None,
                     help='index of gpu to use)')
 parser.add_argument('--hidden', type=int, default=200,
                     help='hidden size of conversation model')
-parser.add_argument('-l', '--learning-rate', type=int, default=2e-5,
+parser.add_argument('-l', '--learning-rate', type=int, default=1e-5,
                     help='base learning rate used')
 parser.add_argument('-b', '--batch-size', type=int, default=2,
                     help='training data batch size')
@@ -49,6 +49,8 @@ parser.add_argument('--conversation-min', type=int, default=3,
                     help='minimum conversation length')
 parser.add_argument('--conversation-max', type=int, default=6,
                     help='maximum conversation length')
+parser.add_argument('--num-neighbors', type=int, default=1,
+                    help='the number of contrastive examples used')
 parser.add_argument('--utterance-max', type=int, default=256,
                     help='maximum utterance length')
 parser.add_argument('-r', '--resume_path', type=str, default=None,
@@ -93,7 +95,7 @@ def main() -> None:
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     dataset = ConversationPathDataset(corpus, tokenizer,
-        min_len=args.conversation_min, max_len=args.conversation_max, max_tokenization_len=args.utterance_max)
+        min_len=args.conversation_min, max_len=args.conversation_max, n_neighbors=args.num_neighbors, max_tokenization_len=args.utterance_max)
     sampler = ConversationPathBatchSampler(args.batch_size, dataset.min_len, dataset.get_indices_by_len())
     loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=conversation_path_collate_fn, pin_memory=device.type != 'cpu', num_workers=4)
 
@@ -133,7 +135,7 @@ def main() -> None:
             is_best = loss < best_loss
             best_loss = min(loss, best_loss)
 
-            run_name = '{}.{}'.format(args.model_name, args.corpus)
+            run_name = '{}.{}.{}.{}.{}'.format(args.model_name, args.corpus, args.conversation_max, args.num_neighbors, args.utterance_max)
 
             save_checkpoint({
                 'step': step,
