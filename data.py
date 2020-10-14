@@ -30,7 +30,7 @@ class ConversationPath():
 
 class ConversationPathDataset(Dataset):
     """docstring for ConversationPathDataset"""
-    def __init__(self, corpus: Corpus, tokenizer: PreTrainedTokenizerBase, min_len: int=3, max_len: int=10, n_neighbors: int=1, min_to_common_ancestor: int=2, max_tokenization_len=256) -> None:
+    def __init__(self, corpus: Corpus, tokenizer: PreTrainedTokenizerBase, min_len: int=3, max_len: int=6, n_neighbors: int=1, min_to_common_ancestor: int=2, max_tokenization_len=256) -> None:
         super(ConversationPathDataset, self).__init__()
         self.corpus = corpus
         self.min_len = min_len
