@@ -123,7 +123,7 @@ def main() -> None:
     while step < args.training_steps:
         loop_steps = args.loop_steps if args.training_steps - step > args.loop_steps else args.training_steps - step
         loss = train(loader, model, criterion, optimizer, scheduler, scaler,
-            device, loop_steps, step)
+            device, loop_steps, step // args.loop_steps)
         step += loop_steps
 
         # checkpoint model every k training loops
@@ -152,7 +152,7 @@ def train(loader: DataLoader, model: nn.Module, criterion: Callable, optimizer: 
     progress = ProgressMeter(
         loop_steps,
         [batch_time, data_time, losses, accuracies],
-        prefix="Step: [{}]".format(step))
+        prefix="Epoch: [{}]".format(step))
 
     model.train()
 
