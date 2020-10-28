@@ -111,7 +111,7 @@ def main() -> None:
     if args.resume_path is not None:
         if os.path.isfile(args.resume_path):
             print("=> loading checkpoint '{}'".format(args.resume_path))
-            checkpoint = torch.load(args.resume_path)
+            checkpoint = torch.load(args.resume_path, map_location=device)
             step = checkpoint['step']
             best_loss = checkpoint['best_loss']
             model.load_state_dict(checkpoint['state_dict'])

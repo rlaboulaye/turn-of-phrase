@@ -1,8 +1,9 @@
 from copy import copy
 from typing import Dict, List, Tuple
 
-from convokit import Corpus, Utterance, UtteranceNode
+from convokit import Conversation, Corpus, Utterance, UtteranceNode
 import numpy as np
+from sklearn.preprocessing import LabelEncoder
 import torch
 from torch.utils.data import Dataset, Sampler
 from transformers import PreTrainedTokenizerBase
@@ -30,7 +31,7 @@ class ConversationPath():
 
 class ConversationPathDataset(Dataset):
     """docstring for ConversationPathDataset"""
-    def __init__(self, corpus: Corpus, tokenizer: PreTrainedTokenizerBase, min_len: int=3, max_len: int=6, n_neighbors: int=1, min_to_common_ancestor: int=2, max_tokenization_len=256) -> None:
+    def __init__(self, corpus: Corpus, tokenizer: PreTrainedTokenizerBase, min_len: int=3, max_len: int=6, n_neighbors: int=1, min_to_common_ancestor: int=2, max_tokenization_len: int=256) -> None:
         super(ConversationPathDataset, self).__init__()
         self.corpus = corpus
         self.min_len = min_len
@@ -124,6 +125,90 @@ class ConversationPathDataset(Dataset):
         return path_tensor, attention_mask_tensor, sequence_length_tensor, target_tensor
 
 
+class CoarseDiscourseDataset(object):
+    """docstring for CoarseDiscourseDataset"""
+    def __init__(self, corpus: Corpus, conversations: List[Conversation], tokenizer: PreTrainedTokenizerBase, max_len: int=8, max_tokenization_len: int=256) -> None:
+        super(CoarseDiscourseDataset, self).__init__()
+        self.corpus = corpus
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+        self.max_tokenization_len = max_tokenization_len
+        labels = set()
+        # make sure that no utterance has None timestamp to prepare for initializing of tree structure
+        for utterance in self.corpus.iter_utterances():
+            if utterance.timestamp is None:
+                utterance.timestamp = 0
+            label = utterance.retrieve_meta('majority_type')
+            if label is not None:
+                labels.add(label)
+        self.label_encoder = LabelEncoder()
+        self.label_encoder.fit(list(labels))
+        self.paths = []
+        self.indices_by_len = [[] for i in range(self.max_len)]
+        for conversation in conversations:
+            try:
+                for path in conversation.get_root_to_leaf_paths():
+                    id_path = [utterance.id for utterance in path]
+                    # skip paths that have unlabelled utterances
+                    if np.any([self.corpus.get_utterance(utterance_id).retrieve_meta('majority_type') is None for utterance_id in id_path]):
+                        continue
+                    # skip paths that are missing utterances
+                    if np.any([not text_valid(self.corpus.get_utterance(utterance_id).text) for utterance_id in id_path]):
+                        continue
+                    if len(id_path) <= self.max_len:
+                        self.indices_by_len[len(id_path) - 1].append(len(self.paths))
+                        self.paths.append(id_path)
+                    else:
+                        for i in range(len(id_path) + 1 - self.max_len):
+                            truncated_id_path = id_path[i: self.max_len + i]
+                            self.indices_by_len[self.max_len - 1].append(len(self.paths))
+                            self.paths.append(truncated_id_path)
+            except:
+                continue
+
+    def get_indices_by_len(self) -> Dict[int, List[int]]:
+        return {i + 1: self.indices_by_len[i] for i in range(len(self.indices_by_len))}
+
+    def __len__(self) -> int:
+        return len(self.paths)
+
+    def __getitem__(self, index: int) -> Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor, torch.LongTensor]:
+        path = self.paths[index]
+        texts = [self.corpus.get_utterance(utterance_id).text for utterance_id in path]
+        sequence_lengths = [len(self.tokenizer.tokenize(text)) for text in texts]
+        encodings = [self.tokenizer(text, max_length=self.max_tokenization_len, padding='max_length', truncation=True) for text in texts]
+        labels = [self.corpus.get_utterance(utterance_id).retrieve_meta('majority_type') for utterance_id in path]
+        targets = self.label_encoder.transform(labels)
+        path_tensor = torch.LongTensor([encoding['input_ids'] for encoding in encodings]).unsqueeze(0)
+        attention_mask_tensor = torch.LongTensor([encoding['attention_mask'] for encoding in encodings]).unsqueeze(0)
+        sequence_length_tensor = torch.LongTensor(sequence_lengths).unsqueeze(0)
+        target_tensor = torch.LongTensor(targets).unsqueeze(0)
+        return path_tensor, attention_mask_tensor, sequence_length_tensor, target_tensor, path
+
+
+class PolitenessDataset(Dataset):
+    """docstring for PolitenessDataset"""
+    def __init__(self, utterances: List[Utterance], tokenizer: PreTrainedTokenizerBase, max_tokenization_len=256):
+        super(PolitenessDataset, self).__init__()
+        self.utterances = utterances
+        self.tokenizer = tokenizer
+        self.max_tokenization_len = max_tokenization_len
+
+    def __len__(self) -> int:
+        return len(self.utterances)
+
+    def __getitem__(self, index: int) -> Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor, torch.LongTensor]:
+        utterance = self.utterances[index]
+        encoding = self.tokenizer(utterance.text, max_length=self.max_tokenization_len, padding='max_length', truncation=True)
+        path_tensor = torch.LongTensor(encoding['input_ids'])
+        attention_mask_tensor = torch.LongTensor(encoding['attention_mask'])
+        if utterance.retrieve_meta('Binary') == -1:
+            target_tensor = torch.LongTensor([0])
+        elif utterance.retrieve_meta('Binary') == 1:
+            target_tensor = torch.LongTensor([1])
+        return path_tensor, attention_mask_tensor, target_tensor
+
+
 class ConversationPathBatchSampler(Sampler):
     """docstring for ConversationPathBatchSampler"""
     def __init__(self, batch_size: int, min_len: int, indices_by_len: Dict[int, List[int]]) -> None:
@@ -151,7 +236,7 @@ class ConversationPathBatchSampler(Sampler):
 
 
 def conversation_path_collate_fn(batch: Tuple[Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor, torch.LongTensor], ...]) -> Tuple[List[torch.LongTensor], List[torch.FloatTensor], torch.LongTensor]:
-    path_tensors, attention_mask_tensor, sequence_length_tensors, target_tensors = [sample for sample in zip(*batch)]
+    path_tensors, attention_mask_tensor, sequence_length_tensors, target_tensors, ids = [sample for sample in zip(*batch)]
     batched_path_tensor = torch.stack(path_tensors, 0)
     batched_path_tensor = batched_path_tensor.reshape(-1, batched_path_tensor.shape[2], batched_path_tensor.shape[3])
     batched_attention_mask_tensor = torch.stack(attention_mask_tensor, 0)
@@ -166,4 +251,4 @@ def conversation_path_collate_fn(batch: Tuple[Tuple[torch.LongTensor, torch.Floa
     for utterance_idx, max_sequence_length in enumerate(max_sequence_length_tensor):
         batched_utterance_tensors.append(batched_path_tensor[:, utterance_idx, :max_sequence_length])
         batched_attention_mask_tensors.append(batched_attention_mask_tensor[:, utterance_idx, :max_sequence_length])
-    return batched_utterance_tensors, batched_attention_mask_tensors, batched_target_tensor
+    return batched_utterance_tensors, batched_attention_mask_tensors, batched_target_tensor, ids
