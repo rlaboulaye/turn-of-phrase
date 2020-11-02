@@ -131,9 +131,6 @@ def train(loader: DataLoader, model: nn.Module, optimizer: Optimizer, scheduler:
         if (i + 1) % DISPLAY_STEPS == 0 or samples_seen == len(loader.dataset):
             print('Training [{}/{}] Loss: {}'.format(samples_seen, len(loader.dataset), np.mean(losses[-DISPLAY_STEPS:])))
 
-        if i == 1000:
-            break
-
 def validate(loader: DataLoader, model: nn.Module, device: torch.device):
     non_blocking = device.type != 'cpu'
     with torch.no_grad():
