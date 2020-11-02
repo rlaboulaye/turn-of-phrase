@@ -147,14 +147,21 @@ class CoarseDiscourseDataset(object):
         self.indices_by_len = [[] for i in range(self.max_len)]
         for conversation in conversations:
             try:
+                paths = []
                 for path in conversation.get_root_to_leaf_paths():
                     id_path = [utterance.id for utterance in path]
-                    # skip paths that have unlabelled utterances
-                    if np.any([self.corpus.get_utterance(utterance_id).retrieve_meta('majority_type') is None for utterance_id in id_path]):
+                    cutoff = len(id_path)
+                    for i, utterance_id in enumerate(id_path):
+                        utterance = self.corpus.get_utterance(utterance_id)
+                        if utterance.retrieve_meta('majority_type') is None or utterance.retrieve_meta('majority_type') == 'other' or not text_valid(utterance.text):
+                            cutoff = i
+                            break
+                    if cutoff == 0:
                         continue
-                    # skip paths that are missing utterances
-                    if np.any([not text_valid(self.corpus.get_utterance(utterance_id).text) for utterance_id in id_path]):
+                    id_path = id_path[:cutoff]
+                    if np.any([path == id_path for path in paths]):
                         continue
+                    paths.append(id_path)
                     if len(id_path) <= self.max_len:
                         self.indices_by_len[len(id_path) - 1].append(len(self.paths))
                         self.paths.append(id_path)

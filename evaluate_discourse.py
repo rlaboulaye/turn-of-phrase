@@ -35,7 +35,7 @@ parser.add_argument('-b', '--batch-size', type=int, default=2,
                     help='training data batch size')
 parser.add_argument('-e', '--epochs', type=int, default=3,
                     help='number of epochs to run')
-parser.add_argument('-t', '--train-split', type=float, default=.85,
+parser.add_argument('-t', '--train-split', type=float, default=.8,
                     help='amount of data used for training')
 parser.add_argument('--max-conversation-len', type=int, default=11,
                     help='maximum conversation length')
@@ -147,18 +147,35 @@ def validate(loader: DataLoader, model: nn.Module, device: torch.device):
 
             losses.append(loss.item())
 
+            # baseline
+            # predictions = []
+            # for id_batch in ids:
+            #     predictions.append([])
+            #     for id_ in id_batch:
+            #         if id_ in loader.dataset.corpus.conversations or '?' in loader.dataset.corpus.get_utterance(id_).text:
+            #             prediction = 'question'
+            #         else:
+            #             prediction = 'answer'
+            #         predictions[-1].append(prediction)
+            #     predictions[-1] = loader.dataset.label_encoder.transform(predictions[-1])
+            #
+
             for id_batch, prediction_batch in zip(ids, predictions):
                 for utterance_id, prediction in zip(id_batch, prediction_batch):
                     if utterance_id in prediction_votes:
                         prediction_votes[utterance_id].append(prediction)
                     else:
                         prediction_votes[utterance_id] = [prediction]
-        utterance_ids = prediction_votes.keys()
-        predictions = np.array([mode(prediction_votes[utterance_id]).mode for utterance_id in utterance_ids])
+        utterance_ids = list(prediction_votes.keys())
+        predictions = np.array([mode(prediction_votes[utterance_id]).mode[0] for utterance_id in utterance_ids])
         labels = [loader.dataset.corpus.get_utterance(utterance_id).retrieve_meta('majority_type') for utterance_id in utterance_ids]
         targets = loader.dataset.label_encoder.transform(labels)
+        print(targets.shape)
+        print(predictions.shape)
+        print(targets[:20])
+        print(predictions[:20])
         accuracy = np.mean(targets == predictions)
-        precision, recall, fscore, _ = precision_recall_fscore_support(targets, predictions, average='macro')
+        precision, recall, fscore, _ = precision_recall_fscore_support(targets, predictions, average='weighted')
         print('Validation Loss: {}, Acc: {}, Pre: {}, Rec: {}, F: {}'.format(np.mean(losses), accuracy, precision, recall, fscore))
 
 
