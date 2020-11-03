@@ -20,7 +20,7 @@ from utils import AverageMeter, ProgressMeter, save_checkpoint
 
 WARMUP_RATIO = 0.1
 CLIPPING_GRADIENT_NORM = 1.0
-MLM_COEF = 0.25
+MLM_COEF = 0.1
 
 
 parser = ArgumentParser(description='Turn of Phrase Pretraining')
@@ -204,8 +204,10 @@ def train(loader: DataLoader, model: nn.Module, mlm_head: nn.Module, criterion: 
             logits, mask_encodings = model(path, attention_masks, mask_indices)
             logits = logits.reshape(targets.shape[0], -1)
             path_loss = criterion(logits, targets)
-            mlm_loss = 0
+            mlm_loss = torch.zeros(1).to(device, non_blocking=non_blocking)
             for mask_encoding_batch, input_ids_batch, mask_indices_batch in zip(mask_encodings, path, mask_indices):
+                if len(mask_indices_batch[0]) == 0:
+                    continue
                 mask_targets = input_ids_batch[mask_indices_batch]
                 mask_logits = mlm_head(mask_encoding_batch)
                 # gradually take mean

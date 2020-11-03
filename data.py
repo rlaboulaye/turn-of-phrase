@@ -21,7 +21,7 @@ def select_mask_indices(sequence_length: int, masking_probability: float, max_ma
     mask_len_probs = mask_len_probs / np.sum(mask_len_probs)
     masked_pos = set()
     while True:
-        mask_len = np.random.multinomial(1, mask_len_probs).argmax()
+        mask_len = np.random.multinomial(1, mask_len_probs).argmax() + 1
         if len(masked_pos) + mask_len > math.floor(sequence_length * masking_probability):
             break
         # start at 1 to avoid masking CLS and end one early to avoid SEP
