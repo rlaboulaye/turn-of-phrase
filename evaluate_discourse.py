@@ -31,7 +31,7 @@ parser.add_argument('--hidden', type=int, default=200,
                     help='hidden size of conversation model')
 parser.add_argument('--num-layers', type=int, default=2,
                     help='number of layers in conversation model')
-parser.add_argument('-l', '--learning-rate', type=int, default=2e-5,
+parser.add_argument('-l', '--learning-rate', type=float, default=2e-5,
                     help='base learning rate used')
 parser.add_argument('-b', '--batch-size', type=int, default=2,
                     help='training data batch size')
