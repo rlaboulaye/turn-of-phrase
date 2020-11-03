@@ -153,7 +153,7 @@ def main() -> None:
             is_best = loss < best_loss
             best_loss = min(loss, best_loss)
 
-            run_name = '{}.{}.{}.{}.{}'.format(args.model_name, args.corpus, args.conversation_max, args.num_neighbors, args.utterance_max)
+            run_name = '{}.{}.{}.{}.{}.{}.{}'.format(args.model_name, args.corpus, args.conversation_max, args.num_neighbors, args.utterance_max, args.hidden, args.num_layers)
 
             save_checkpoint({
                 'step': step,
