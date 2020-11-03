@@ -1,4 +1,5 @@
 from copy import copy
+import math
 from typing import Dict, List, Tuple
 
 from convokit import Conversation, Corpus, Utterance, UtteranceNode
@@ -13,7 +14,20 @@ DELETED_KEYWORD = '[deleted]'
 
 
 def text_valid(text: str) -> bool:
-    return text is not None and len(text) > 0 and text != DELETED_KEYWORD
+    return text is not None and len(text) > 0 and text != DELETED_KEYWORD and not text.isspace()
+
+def select_mask_indices(sequence_length: int, masking_probability: float, max_mask_len: int=3):
+    mask_len_probs = np.array([1. / (i + 1) for i in range(max_mask_len)])
+    mask_len_probs = mask_len_probs / np.sum(mask_len_probs)
+    masked_pos = set()
+    while True:
+        mask_len = np.random.multinomial(1, mask_len_probs).argmax()
+        if len(masked_pos) + mask_len > math.floor(sequence_length * masking_probability):
+            break
+        # start at 1 to avoid masking CLS and end one early to avoid SEP
+        mask_pos = np.random.randint(1, sequence_length - mask_len, 1)
+        masked_pos.update(np.arange(mask_pos, mask_pos + mask_len))
+    return sorted(list(masked_pos))
 
 
 class ConversationPath():
@@ -31,7 +45,7 @@ class ConversationPath():
 
 class ConversationPathDataset(Dataset):
     """docstring for ConversationPathDataset"""
-    def __init__(self, corpus: Corpus, tokenizer: PreTrainedTokenizerBase, min_len: int=3, max_len: int=6, n_neighbors: int=1, min_to_common_ancestor: int=2, max_tokenization_len: int=256) -> None:
+    def __init__(self, corpus: Corpus, tokenizer: PreTrainedTokenizerBase, min_len: int=3, max_len: int=6, n_neighbors: int=1, min_to_common_ancestor: int=2, max_tokenization_len: int=256, masking_probability: float=.15) -> None:
         super(ConversationPathDataset, self).__init__()
         self.corpus = corpus
         self.min_len = min_len
@@ -39,6 +53,7 @@ class ConversationPathDataset(Dataset):
         self.n_neighbors = n_neighbors
         self.min_to_common_ancestor = min_to_common_ancestor
         self.max_tokenization_len = max_tokenization_len
+        self.masking_probability = masking_probability
         self.tokenizer = tokenizer
         self._initialize_conversation_paths()
 
@@ -102,7 +117,7 @@ class ConversationPathDataset(Dataset):
     def __len__(self) -> int:
         return len(self.conversation_paths)
 
-    def __getitem__(self, index: int) -> Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor, torch.LongTensor]:
+    def __getitem__(self, index: int) -> Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor, torch.LongTensor, List[List[int]]]:
         conversation_path = self.conversation_paths[index]
         target_utterance_id = conversation_path.utterance_ids[-1]
         conversation_path_neighborhood = [conversation_path] + [self.conversation_paths[self.id_to_idx[neighbor_id]] if neighbor_id in self.id_to_idx else self.id_to_rejects[neighbor_id] for neighbor_id in conversation_path.sample_neighbors(self.n_neighbors)]
@@ -111,18 +126,19 @@ class ConversationPathDataset(Dataset):
         sequence_lengths = []
         for path in conversation_path_neighborhood:
             utterance_ids = path.utterance_ids[:-1] + [target_utterance_id]
-            # add conversation title to the text of the first utterance
-            texts = [self.corpus.get_conversation(utterance_ids[0]).retrieve_meta('title') + ' ' + self.corpus.get_utterance(utterance_ids[0]).text]
-            texts.extend([self.corpus.get_utterance(utterance_id).text for utterance_id in utterance_ids[1:]])
+            texts = [self.corpus.get_utterance(utterance_id).text for utterance_id in utterance_ids]
             sequence_lengths.append([len(self.tokenizer.tokenize(text)) for text in texts])
             encodings = [self.tokenizer(text, max_length=self.max_tokenization_len, padding='max_length', truncation=True) for text in texts]
             tokenized_paths.append([encoding['input_ids'] for encoding in encodings])
-            attention_masks.append([encoding['attention_mask'] for encoding in encodings])
+            attention_masks.append([np.array(encoding['attention_mask']) for encoding in encodings])
+            for sequence_length, attention_mask in zip(sequence_lengths[-1], attention_masks[-1]):
+                mask_indices = select_mask_indices(min(sequence_length, self.max_tokenization_len), self.masking_probability)
+                attention_mask[mask_indices] = 0
         path_tensor = torch.LongTensor(tokenized_paths)
         attention_mask_tensor = torch.LongTensor(attention_masks)
         sequence_length_tensor = torch.LongTensor(sequence_lengths)
         target_tensor = torch.LongTensor([0])
-        return path_tensor, attention_mask_tensor, sequence_length_tensor, target_tensor
+        return path_tensor, attention_mask_tensor, sequence_length_tensor, target_tensor, path
 
 
 class CoarseDiscourseDataset(object):

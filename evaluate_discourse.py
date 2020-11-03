@@ -29,6 +29,8 @@ parser.add_argument('-g', '--gpu', type=int, default=None,
                     help='index of gpu to use)')
 parser.add_argument('--hidden', type=int, default=200,
                     help='hidden size of conversation model')
+parser.add_argument('--num-layers', type=int, default=2,
+                    help='number of layers in conversation model')
 parser.add_argument('-l', '--learning-rate', type=int, default=2e-5,
                     help='base learning rate used')
 parser.add_argument('-b', '--batch-size', type=int, default=2,
@@ -84,7 +86,7 @@ def main() -> None:
     num_training_steps = args.epochs * len(train_dataset)
 
     utterance_encoder = AutoModel.from_pretrained(args.model_name)
-    conversation_encoder = nn.LSTM(utterance_encoder.config.hidden_size, 200)
+    conversation_encoder = nn.LSTM(utterance_encoder.config.hidden_size, 200, args.num_layers)
     pretrained_model = ConversationClassificationHRNN(utterance_encoder, conversation_encoder, 1)
     pretrained_model.to(device)
 
@@ -170,10 +172,6 @@ def validate(loader: DataLoader, model: nn.Module, device: torch.device):
         predictions = np.array([mode(prediction_votes[utterance_id]).mode[0] for utterance_id in utterance_ids])
         labels = [loader.dataset.corpus.get_utterance(utterance_id).retrieve_meta('majority_type') for utterance_id in utterance_ids]
         targets = loader.dataset.label_encoder.transform(labels)
-        print(targets.shape)
-        print(predictions.shape)
-        print(targets[:20])
-        print(predictions[:20])
         accuracy = np.mean(targets == predictions)
         precision, recall, fscore, _ = precision_recall_fscore_support(targets, predictions, average='weighted')
         print('Validation Loss: {}, Acc: {}, Pre: {}, Rec: {}, F: {}'.format(np.mean(losses), accuracy, precision, recall, fscore))

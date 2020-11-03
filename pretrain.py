@@ -11,15 +11,16 @@ import torch.backends.cudnn as cudnn
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
-from transformers import AdamW, AutoModel, AutoTokenizer, get_linear_schedule_with_warmup
+from transformers import AdamW, AutoModel, AutoModelForMaskedLM, AutoTokenizer, get_linear_schedule_with_warmup
 
 from data import ConversationPathDataset, ConversationPathBatchSampler, conversation_path_collate_fn
-from model import HierarchicalRNN
+from model import ConversationClassificationHRNN
 from utils import AverageMeter, ProgressMeter, save_checkpoint
 
 
 WARMUP_RATIO = 0.1
 CLIPPING_GRADIENT_NORM = 1.0
+MLM_COEF = 0.25
 
 
 parser = ArgumentParser(description='Turn of Phrase Pretraining')
@@ -35,7 +36,9 @@ parser.add_argument('-g', '--gpu', type=int, default=None,
                     help='index of gpu to use)')
 parser.add_argument('--hidden', type=int, default=200,
                     help='hidden size of conversation model')
-parser.add_argument('-l', '--learning-rate', type=int, default=1e-5,
+parser.add_argument('--num-layers', type=int, default=2,
+                    help='number of layers in conversation model')
+parser.add_argument('-l', '--learning-rate', type=int, default=2e-5,
                     help='base learning rate used')
 parser.add_argument('-b', '--batch-size', type=int, default=2,
                     help='training data batch size')
@@ -93,6 +96,18 @@ def main() -> None:
     else:
         corpus = Corpus(filename=download(args.corpus))
 
+    conversations = list(corpus.iter_conversations())
+    # add title to root utterances
+    for conversation in conversations:
+        utterance = corpus.get_utterance(conversation.id)
+        title = conversation.retrieve_meta('title')
+        if title is None:
+            title = ''
+        if utterance.text is None:
+            utterance.text = title
+        else:
+            utterance.text = title + ' ' + utterance.text
+
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     dataset = ConversationPathDataset(corpus, tokenizer,
         min_len=args.conversation_min, max_len=args.conversation_max, n_neighbors=args.num_neighbors, max_tokenization_len=args.utterance_max)
@@ -100,11 +115,13 @@ def main() -> None:
     loader = DataLoader(dataset, batch_sampler=sampler, collate_fn=conversation_path_collate_fn, pin_memory=device.type != 'cpu', num_workers=4)
 
     utterance_encoder = AutoModel.from_pretrained(args.model_name)
-    conversation_encoder = nn.LSTM(utterance_encoder.config.hidden_size, args.hidden)
-    model = HierarchicalRNN(utterance_encoder, conversation_encoder, 1)
+    conversation_encoder = nn.LSTM(utterance_encoder.config.hidden_size, args.hidden, args.num_layers)
+    model = ConversationClassificationHRNN(utterance_encoder, conversation_encoder, 1)
+    mlm_head = AutoModelForMaskedLM.from_pretrained(args.model_name).predictions
     model.to(device)
+    mlm_head.to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = AdamW(model.parameters(), args.learning_rate)
+    optimizer = AdamW(list(model.parameters()) + list(mlm_head.parameters()), args.learning_rate)
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=WARMUP_RATIO*args.training_steps, num_training_steps=args.training_steps)
     scaler = GradScaler()
 
@@ -115,6 +132,7 @@ def main() -> None:
             step = checkpoint['step']
             best_loss = checkpoint['best_loss']
             model.load_state_dict(checkpoint['state_dict'])
+            mlm_head.load_state_dict(checkpoint['head_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             scheduler.load_state_dict(checkpoint['scheduler'])
             print("=> loaded checkpoint '{}' (step {})"
@@ -124,7 +142,7 @@ def main() -> None:
 
     while step < args.training_steps:
         loop_steps = args.loop_steps if args.training_steps - step > args.loop_steps else args.training_steps - step
-        loss = train(loader, model, criterion, optimizer, scheduler, scaler,
+        loss = train(loader, model, mlm_head, criterion, optimizer, scheduler, scaler,
             device, loop_steps, step // args.loop_steps)
         step += loop_steps
 
@@ -141,25 +159,28 @@ def main() -> None:
                 'step': step,
                 'model': args.model_name,
                 'state_dict': model.state_dict(),
+                'head_state_dict': mlm_head.state_dict(),
                 'best_loss': best_loss,
                 'optimizer': optimizer.state_dict(),
                 'scheduler': scheduler.state_dict()
             }, is_best, run_name)
 
-def train(loader: DataLoader, model: nn.Module, criterion: Callable, optimizer: Optimizer, scheduler: object, scaler: GradScaler, device: torch.device, loop_steps: int, step: int):
+def train(loader: DataLoader, model: nn.Module, mlm_head: nn.Module, criterion: Callable, optimizer: Optimizer, scheduler: object, scaler: GradScaler, device: torch.device, loop_steps: int, step: int):
     batch_time = AverageMeter('Time', ':6.3f')
     data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
+    path_losses = AverageMeter('Path Loss', ':.4e')
+    mlm_losses = AverageMeter('MLM Loss', ':.4e')
     accuracies = AverageMeter('Accuracy', ':6.2f')
     progress = ProgressMeter(
         loop_steps,
-        [batch_time, data_time, losses, accuracies],
+        [batch_time, data_time, losses, path_losses, mlm_losses, accuracies],
         prefix="Epoch: [{}]".format(step))
 
     model.train()
 
     end = time.time()
-    for i, (path, attention_masks, targets) in enumerate(loader):
+    for i, (path, attention_masks, targets, _) in enumerate(loader):
         data_time.update(time.time() - end)
 
         non_blocking = device.type != 'cpu'
@@ -167,13 +188,34 @@ def train(loader: DataLoader, model: nn.Module, criterion: Callable, optimizer: 
         attention_masks = [attention_mask.to(device, non_blocking=non_blocking) for attention_mask in attention_masks]
         targets = targets.to(device, non_blocking=non_blocking)
 
+        #
+        mask_indices = []
+        for input_ids_batch, attention_mask_batch in zip(path, attention_masks):
+            sequence_lengths_batch = attention_mask_batch.shape[1] - attention_mask_batch.flip(1).argmax(1)
+            attention_mask_batch = attention_mask_batch.detach().clone()
+            # remove masking for sequence length
+            for batch_idx in range(input_ids_batch.shape[0]):
+                attention_mask_batch[batch_idx, sequence_lengths_batch[batch_idx]:] = 1
+            mask_indices_batch = (attention_mask_batch == 0).nonzero(as_tuple=True)
+            mask_indices.append(mask_indices_batch)
+        #
+
         with autocast():
-            logits = model(path, attention_masks)
+            logits, mask_encodings = model(path, attention_masks, mask_indices)
             logits = logits.reshape(targets.shape[0], -1)
-            loss = criterion(logits, targets)
+            path_loss = criterion(logits, targets)
+            mlm_loss = 0
+            for mask_encoding_batch, input_ids_batch, mask_indices_batch in zip(mask_encodings, path, mask_indices):
+                mask_targets = input_ids_batch[mask_indices_batch]
+                mask_logits = mlm_head(mask_encoding_batch)
+                # gradually take mean
+                mlm_loss += criterion(mask_logits, mask_targets) * (1. / len(path))
+            loss = path_loss + MLM_COEF * mlm_loss
             accuracy = (logits.argmax(1) == targets).float().mean().item()
 
         losses.update(loss.item(), targets.shape[0])
+        path_losses.update(path_loss.item(), targets.shape[0])
+        mlm_losses.update(mlm_loss.item(), targets.shape[0])
         accuracies.update(accuracy, targets.shape[0])
 
         optimizer.zero_grad()
