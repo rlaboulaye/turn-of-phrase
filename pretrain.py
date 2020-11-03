@@ -20,7 +20,7 @@ from utils import AverageMeter, ProgressMeter, save_checkpoint
 
 WARMUP_RATIO = 0.1
 CLIPPING_GRADIENT_NORM = 1.0
-MLM_COEF = 0.1
+MLM_COEF = 1.0
 
 
 parser = ArgumentParser(description='Turn of Phrase Pretraining')
