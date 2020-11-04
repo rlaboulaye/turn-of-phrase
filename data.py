@@ -11,6 +11,8 @@ from transformers import PreTrainedTokenizerBase
 
 
 DELETED_KEYWORD = '[deleted]'
+DELTA_STRING = '∆'
+ENCODED_DELTA_STRING = '&amp;#8710;'
 
 
 def text_valid(text: str) -> bool:
@@ -28,6 +30,73 @@ def select_mask_indices(sequence_length: int, masking_probability: float, max_ma
         mask_pos = np.random.randint(1, sequence_length - mask_len, 1)
         masked_pos.update(np.arange(mask_pos, mask_pos + mask_len))
     return sorted(list(masked_pos))
+
+def add_title_to_root(corpus: Corpus):
+    for conversation in corpus.iter_conversations():
+        utterance = corpus.get_utterance(conversation.id)
+        title = conversation.retrieve_meta('title')
+        if title is None:
+            title = ''
+        if utterance.text is None:
+            utterance.text = title
+        else:
+            utterance.text = title + ' ' + utterance.text
+
+# filtering code taken directly from https://github.com/CornellNLP/Cornell-Conversational-Analysis-Toolkit/blob/master/datasets/winning-args-corpus/stats.ipynb
+def filter_winning_arguments_corpus(corpus: Corpus):
+    utterance_ids = corpus.get_utterance_ids()
+
+    #we want the original post made by op, the challenger's comments and all of OP's responses to the challengers
+    #these three lists are utterance ids for the original post, challenger comments and op replies respectively
+
+    opPost=[]
+    challengerComments=[]
+    opReplies=[]
+    for iD in utterance_ids:
+        
+        if corpus.get_utterance(iD).id==corpus.get_utterance(iD).conversation_id:
+            opPost.append(iD)
+        if corpus.get_utterance(iD).speaker.id != corpus.get_utterance(corpus.get_utterance(iD).conversation_id).speaker.id and corpus.get_utterance(iD).meta['success']==0:
+            challengerComments.append(iD)
+
+        if corpus.get_utterance(iD).speaker.id != corpus.get_utterance(corpus.get_utterance(iD).conversation_id).speaker.id and corpus.get_utterance(iD).meta['success']==1:
+            challengerComments.append(iD)
+
+
+        if corpus.get_utterance(iD).id!=corpus.get_utterance(iD).conversation_id and corpus.get_utterance(iD).speaker.id == corpus.get_utterance(corpus.get_utterance(iD).conversation_id).speaker.id and corpus.get_utterance(iD).meta['success']==0:
+            opReplies.append(iD)
+        if corpus.get_utterance(iD).id!=corpus.get_utterance(iD).conversation_id and corpus.get_utterance(iD).speaker.id == corpus.get_utterance(corpus.get_utterance(iD).conversation_id).speaker.id and corpus.get_utterance(iD).meta['success']==1:
+            opReplies.append(iD)
+            
+    #subset challenger and op replies for later use (into successful and unsuccessful arguments)
+    challengerPos=[]
+    challengerNeg=[]
+    for iD in challengerComments:
+        if corpus.get_utterance(iD).meta['success']==1:
+            challengerPos.append(iD)
+        if corpus.get_utterance(iD).meta['success']==0:
+            challengerNeg.append(iD)
+
+    #these are OP's replies to successful and unsuccessful challengers        
+    opReplyPos=[]
+    opReplyNeg=[]
+    for iD in opReplies:
+        if corpus.get_utterance(iD).meta['success']==1:
+            opReplyPos.append(iD)
+        if corpus.get_utterance(iD).meta['success']==0:
+            opReplyNeg.append(iD)
+
+    subset=opPost+challengerComments+opReplies
+
+    #collect utterance dict given the subset of ids
+    utterance_list=[]
+    for iD in subset:
+        utterance_list.append(corpus.get_utterance(iD))
+
+    #this subset separates OP comments and challenger utterances from all other comments in every conversation (thread)
+    corpus = Corpus(utterances=utterance_list)
+
+    return corpus
 
 
 class ConversationPath():
@@ -141,7 +210,7 @@ class ConversationPathDataset(Dataset):
         return path_tensor, attention_mask_tensor, sequence_length_tensor, target_tensor, path
 
 
-class CoarseDiscourseDataset(object):
+class CoarseDiscourseDataset(Dataset):
     """docstring for CoarseDiscourseDataset"""
     def __init__(self, corpus: Corpus, conversations: List[Conversation], tokenizer: PreTrainedTokenizerBase, max_len: int=8, max_tokenization_len: int=256) -> None:
         super(CoarseDiscourseDataset, self).__init__()
@@ -206,6 +275,51 @@ class CoarseDiscourseDataset(object):
         attention_mask_tensor = torch.LongTensor([encoding['attention_mask'] for encoding in encodings]).unsqueeze(0)
         sequence_length_tensor = torch.LongTensor(sequence_lengths).unsqueeze(0)
         target_tensor = torch.LongTensor(targets).unsqueeze(0)
+        return path_tensor, attention_mask_tensor, sequence_length_tensor, target_tensor, path
+
+
+class WinningArgumentsDataset(Dataset):
+    """docstring for WinningArgumentsDataset"""
+    def __init__(self, corpus: Corpus, conversations: List[Conversation], tokenizer: PreTrainedTokenizerBase, max_len: int=8, max_tokenization_len: int=256) -> None:
+        super(WinningArgumentsDataset, self).__init__()
+        self.corpus = corpus
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+        self.max_tokenization_len = max_tokenization_len
+        self.paths = []
+        self.indices_by_len = [[] for i in range(self.max_len)]
+        for conversation in conversations:
+            try:
+                for path in conversation.get_root_to_leaf_paths():
+                    id_path = [utterance.id for utterance in path]
+                    # remove all utterances including and past the awarded delta
+                    for i, utterance_id in enumerate(id_path):
+                        utterance = self.corpus.get_utterance(utterance_id)
+                        if (DELTA_STRING in utterance.text or ENCODED_DELTA_STRING in utterance.text) and (i != 0 and i != 1):
+                            id_path = id_path[:i]
+                            break
+                    # truncate path to max
+                    id_path = id_path[:self.max_len]
+                    self.indices_by_len[len(id_path) - 1].append(len(self.paths))
+                    self.paths.append(id_path)
+            except:
+                continue
+
+    def get_indices_by_len(self) -> Dict[int, List[int]]:
+        return {i + 1: self.indices_by_len[i] for i in range(len(self.indices_by_len))}
+
+    def __len__(self) -> int:
+        return len(self.paths)
+
+    def __getitem__(self, index: int) -> Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor, torch.LongTensor]:
+        path = self.paths[index]
+        texts = [self.corpus.get_utterance(utterance_id).text for utterance_id in path]
+        sequence_lengths = [len(self.tokenizer.tokenize(text)) for text in texts]
+        encodings = [self.tokenizer(text, max_length=self.max_tokenization_len, padding='max_length', truncation=True) for text in texts]
+        path_tensor = torch.LongTensor([encoding['input_ids'] for encoding in encodings]).unsqueeze(0)
+        attention_mask_tensor = torch.LongTensor([encoding['attention_mask'] for encoding in encodings]).unsqueeze(0)
+        sequence_length_tensor = torch.LongTensor(sequence_lengths).unsqueeze(0)
+        target_tensor = torch.FloatTensor([self.corpus.get_utterance(path[-1]).retrieve_meta('success')])
         return path_tensor, attention_mask_tensor, sequence_length_tensor, target_tensor, path
 
 

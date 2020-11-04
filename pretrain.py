@@ -13,7 +13,7 @@ from torch.optim import Optimizer
 from torch.utils.data import DataLoader
 from transformers import AdamW, AutoModel, AutoModelForMaskedLM, AutoTokenizer, get_linear_schedule_with_warmup
 
-from data import ConversationPathDataset, ConversationPathBatchSampler, conversation_path_collate_fn
+from data import ConversationPathDataset, ConversationPathBatchSampler, add_title_to_root, conversation_path_collate_fn
 from model import ConversationClassificationHRNN
 from utils import AverageMeter, ProgressMeter, save_checkpoint
 
@@ -96,17 +96,9 @@ def main() -> None:
     else:
         corpus = Corpus(filename=download(args.corpus))
 
+    add_title_to_root(corpus)
+
     conversations = list(corpus.iter_conversations())
-    # add title to root utterances
-    for conversation in conversations:
-        utterance = corpus.get_utterance(conversation.id)
-        title = conversation.retrieve_meta('title')
-        if title is None:
-            title = ''
-        if utterance.text is None:
-            utterance.text = title
-        else:
-            utterance.text = title + ' ' + utterance.text
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     dataset = ConversationPathDataset(corpus, tokenizer,
