@@ -205,7 +205,7 @@ def train(loader: DataLoader, model: nn.Module, criterion: Callable, optimizer: 
             # logits, mask_encodings = model(input_ids=path, attention_mask=attention_mask)
             output = model(input_ids=path, attention_mask=attention_mask, labels=targets)
             logits = output.logits
-            loss = output.loss
+            loss = output.loss.sum()
             # # mlm_loss = torch.zeros(1).to(device, non_blocking=non_blocking)
             # for mask_encoding_batch, input_ids_batch, mask_indices_batch in zip(mask_encodings, path, mask_indices):
             #     if len(mask_indices_batch[0]) == 0:
