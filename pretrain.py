@@ -116,7 +116,7 @@ def main() -> None:
             checkpoint = torch.load(args.resume_path, map_location=device)
             step = checkpoint['step']
             best_loss = checkpoint['best_loss']
-            model.load_state_dict(checkpoint['state_dict'])
+            model.bert.load_state_dict(checkpoint['state_dict'])
             # mlm_head.load_state_dict(checkpoint['head_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             scheduler.load_state_dict(checkpoint['scheduler'])
@@ -154,7 +154,7 @@ def main() -> None:
             save_checkpoint({
                 'step': step,
                 'model': args.model_name,
-                'state_dict': model.state_dict(),
+                'state_dict': model.bert.state_dict(),
                 'best_loss': best_loss,
                 'optimizer': optimizer.state_dict(),
                 'scheduler': scheduler.state_dict()
