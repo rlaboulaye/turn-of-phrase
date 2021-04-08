@@ -102,7 +102,6 @@ def main() -> None:
     # model = ConversationClassificationHRNN(utterance_encoder, conversation_encoder, 1)
     # mlm_head = AutoModelForMaskedLM.from_pretrained(args.model_name).predictions
     model = AutoModelForMultipleChoice.from_pretrained(args.model_name)
-    model = torch.nn.DataParallel(model)
     model.to(device)
     # mlm_head.to(device)
     criterion = nn.CrossEntropyLoss()
@@ -117,7 +116,7 @@ def main() -> None:
             checkpoint = torch.load(args.resume_path, map_location=device)
             step = checkpoint['step']
             best_loss = checkpoint['best_loss']
-            model.module.bert.load_state_dict(checkpoint['state_dict'])
+            model.bert.load_state_dict(checkpoint['state_dict'])
             # mlm_head.load_state_dict(checkpoint['head_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             scheduler.load_state_dict(checkpoint['scheduler'])
@@ -155,7 +154,7 @@ def main() -> None:
             save_checkpoint({
                 'step': step,
                 'model': args.model_name,
-                'state_dict': model.module.bert.state_dict(),
+                'state_dict': model.bert.state_dict(),
                 'best_loss': best_loss,
                 'optimizer': optimizer.state_dict(),
                 'scheduler': scheduler.state_dict()
