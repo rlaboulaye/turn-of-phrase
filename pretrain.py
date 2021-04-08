@@ -44,11 +44,11 @@ parser.add_argument('-s', '--seed', type=int, default=None,
                     help='random seed for reproducibility')
 parser.add_argument('--conversation-min', type=int, default=3,
                     help='minimum conversation length')
-parser.add_argument('--conversation-max', type=int, default=7,
+parser.add_argument('--conversation-max', type=int, default=6,
                     help='maximum conversation length')
-parser.add_argument('--num-neighbors', type=int, default=1,
+parser.add_argument('--num-neighbors', type=int, default=3,
                     help='the number of contrastive examples used')
-parser.add_argument('--utterance-max', type=int, default=1536,
+parser.add_argument('--utterance-max', type=int, default=1024,
                     help='maximum utterance length')
 parser.add_argument('-r', '--resume_path', type=str, default=None,
                     help='path to model from which you would like to resume')
@@ -117,7 +117,7 @@ def main() -> None:
             checkpoint = torch.load(args.resume_path, map_location=device)
             step = checkpoint['step']
             best_loss = checkpoint['best_loss']
-            model.bert.load_state_dict(checkpoint['state_dict'])
+            model.module.bert.load_state_dict(checkpoint['state_dict'])
             # mlm_head.load_state_dict(checkpoint['head_state_dict'])
             optimizer.load_state_dict(checkpoint['optimizer'])
             scheduler.load_state_dict(checkpoint['scheduler'])
@@ -141,7 +141,7 @@ def main() -> None:
             is_best = loss < best_loss
             best_loss = min(loss, best_loss)
 
-            run_name = '{}.{}.{}.{}.{}.{}.{}'.format(args.model_name, args.corpus, args.conversation_max, args.num_neighbors, args.utterance_max)
+            run_name = '{}.{}.{}.{}.{}'.format(args.model_name.split('/')[-1], args.corpus, args.conversation_max, args.num_neighbors, args.utterance_max)
 
             # save_checkpoint({
             #     'step': step,
@@ -155,7 +155,7 @@ def main() -> None:
             save_checkpoint({
                 'step': step,
                 'model': args.model_name,
-                'state_dict': model.bert.state_dict(),
+                'state_dict': model.module.bert.state_dict(),
                 'best_loss': best_loss,
                 'optimizer': optimizer.state_dict(),
                 'scheduler': scheduler.state_dict()
