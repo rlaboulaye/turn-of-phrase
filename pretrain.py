@@ -34,7 +34,7 @@ parser.add_argument('--end-index', type=int, default=None,
                     help='end index for utterance.json')
 parser.add_argument('-l', '--learning-rate', type=float, default=2e-5,
                     help='base learning rate used')
-parser.add_argument('-b', '--batch-size', type=int, default=2,
+parser.add_argument('-b', '--batch-size', type=int, default=4,
                     help='training data batch size')
 parser.add_argument('-t', '--training-steps', type=int, default=100000,
                     help='number of training steps to run')
@@ -44,11 +44,11 @@ parser.add_argument('-s', '--seed', type=int, default=None,
                     help='random seed for reproducibility')
 parser.add_argument('--conversation-min', type=int, default=3,
                     help='minimum conversation length')
-parser.add_argument('--conversation-max', type=int, default=8,
+parser.add_argument('--conversation-max', type=int, default=7,
                     help='maximum conversation length')
 parser.add_argument('--num-neighbors', type=int, default=1,
                     help='the number of contrastive examples used')
-parser.add_argument('--utterance-max', type=int, default=4096,
+parser.add_argument('--utterance-max', type=int, default=1536,
                     help='maximum utterance length')
 parser.add_argument('-r', '--resume_path', type=str, default=None,
                     help='path to model from which you would like to resume')
@@ -102,6 +102,7 @@ def main() -> None:
     # model = ConversationClassificationHRNN(utterance_encoder, conversation_encoder, 1)
     # mlm_head = AutoModelForMaskedLM.from_pretrained(args.model_name).predictions
     model = AutoModelForMultipleChoice.from_pretrained(args.model_name)
+    model = torch.nn.DataParallel(model)
     model.to(device)
     # mlm_head.to(device)
     criterion = nn.CrossEntropyLoss()
@@ -140,7 +141,7 @@ def main() -> None:
             is_best = loss < best_loss
             best_loss = min(loss, best_loss)
 
-            run_name = '{}.{}.{}.{}.{}.{}.{}'.format(args.model_name, args.corpus, args.conversation_max, args.num_neighbors, args.utterance_max, args.hidden, args.num_layers)
+            run_name = '{}.{}.{}.{}.{}.{}.{}'.format(args.model_name, args.corpus, args.conversation_max, args.num_neighbors, args.utterance_max)
 
             # save_checkpoint({
             #     'step': step,
