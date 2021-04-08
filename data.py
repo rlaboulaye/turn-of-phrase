@@ -114,7 +114,7 @@ class ConversationPath():
 
 class ConversationPathDataset(Dataset):
     """docstring for ConversationPathDataset"""
-    def __init__(self, corpus: Corpus, tokenizer: PreTrainedTokenizerBase, min_len: int=3, max_len: int=6, n_neighbors: int=1, min_to_common_ancestor: int=2, max_tokenization_len: int=256, masking_probability: float=.15) -> None:
+    def __init__(self, corpus: Corpus, tokenizer: PreTrainedTokenizerBase, min_len: int=3, max_len: int=6, n_neighbors: int=1, min_to_common_ancestor: int=2, max_tokenization_len: int=4096, masking_probability: float=.15) -> None:
         super(ConversationPathDataset, self).__init__()
         self.corpus = corpus
         self.min_len = min_len
@@ -186,28 +186,58 @@ class ConversationPathDataset(Dataset):
     def __len__(self) -> int:
         return len(self.conversation_paths)
 
+    # def __getitem__(self, index: int) -> Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor, torch.LongTensor, List[List[int]]]:
+    #     conversation_path = self.conversation_paths[index]
+    #     target_utterance_id = conversation_path.utterance_ids[-1]
+    #     conversation_path_neighborhood = [conversation_path] + [self.conversation_paths[self.id_to_idx[neighbor_id]] if neighbor_id in self.id_to_idx else self.id_to_rejects[neighbor_id] for neighbor_id in conversation_path.sample_neighbors(self.n_neighbors)]
+    #     tokenized_paths = []
+    #     attention_masks = []
+    #     sequence_lengths = []
+    #     for path in conversation_path_neighborhood:
+    #         utterance_ids = path.utterance_ids[:-1] + [target_utterance_id]
+    #         texts = [self.corpus.get_utterance(utterance_id).text for utterance_id in utterance_ids]
+    #         sequence_lengths.append([len(self.tokenizer.tokenize(text)) for text in texts])
+    #         encodings = [self.tokenizer(text, max_length=self.max_tokenization_len, padding='max_length', truncation=True) for text in texts]
+    #         tokenized_paths.append([encoding['input_ids'] for encoding in encodings])
+    #         attention_masks.append([np.array(encoding['attention_mask']) for encoding in encodings])
+    #         for sequence_length, attention_mask in zip(sequence_lengths[-1], attention_masks[-1]):
+    #             mask_indices = select_mask_indices(min(sequence_length, self.max_tokenization_len), self.masking_probability)
+    #             attention_mask[mask_indices] = 0
+    #     path_tensor = torch.LongTensor(tokenized_paths)
+    #     attention_mask_tensor = torch.LongTensor(attention_masks)
+    #     sequence_length_tensor = torch.LongTensor(sequence_lengths)
+    #     target_tensor = torch.LongTensor([0])
+    #     return path_tensor, attention_mask_tensor, sequence_length_tensor, target_tensor, path
+
     def __getitem__(self, index: int) -> Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor, torch.LongTensor, List[List[int]]]:
         conversation_path = self.conversation_paths[index]
         target_utterance_id = conversation_path.utterance_ids[-1]
         conversation_path_neighborhood = [conversation_path] + [self.conversation_paths[self.id_to_idx[neighbor_id]] if neighbor_id in self.id_to_idx else self.id_to_rejects[neighbor_id] for neighbor_id in conversation_path.sample_neighbors(self.n_neighbors)]
-        tokenized_paths = []
-        attention_masks = []
-        sequence_lengths = []
+
+        conversation_path_neighborhood_texts = []
         for path in conversation_path_neighborhood:
-            utterance_ids = path.utterance_ids[:-1] + [target_utterance_id]
+            utterance_ids = [target_utterance_id] + path.utterance_ids[:-1][::-1]
             texts = [self.corpus.get_utterance(utterance_id).text for utterance_id in utterance_ids]
-            sequence_lengths.append([len(self.tokenizer.tokenize(text)) for text in texts])
-            encodings = [self.tokenizer(text, max_length=self.max_tokenization_len, padding='max_length', truncation=True) for text in texts]
-            tokenized_paths.append([encoding['input_ids'] for encoding in encodings])
-            attention_masks.append([np.array(encoding['attention_mask']) for encoding in encodings])
-            for sequence_length, attention_mask in zip(sequence_lengths[-1], attention_masks[-1]):
-                mask_indices = select_mask_indices(min(sequence_length, self.max_tokenization_len), self.masking_probability)
-                attention_mask[mask_indices] = 0
-        path_tensor = torch.LongTensor(tokenized_paths)
-        attention_mask_tensor = torch.LongTensor(attention_masks)
-        sequence_length_tensor = torch.LongTensor(sequence_lengths)
-        target_tensor = torch.LongTensor([0])
-        return path_tensor, attention_mask_tensor, sequence_length_tensor, target_tensor, path
+            path_text = self.tokenizer.sep_token.join(texts)
+            conversation_path_neighborhood_texts.append(path_text)
+        tokenized_path = self.tokenizer(conversation_path_neighborhood_texts, max_length=self.max_tokenization_len, padding=True, truncation=True, return_tensors='pt')
+        return tokenized_path.input_ids, tokenized_path.attention_mask, torch.LongTensor([0])
+
+
+def conversation_path_collate_fn(batch: Tuple[Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor, torch.LongTensor], ...]) -> Tuple[List[torch.LongTensor], List[torch.FloatTensor], torch.LongTensor]:
+    path_tensors, attention_masks, target_tensors = [sample for sample in zip(*batch)]
+    max_path_tensor_len = max([path_tensor.shape[-1] for path_tensor in path_tensors])
+    padded_path_tensors = [torch.nn.functional.pad(path_tensor, (0, max_path_tensor_len - path_tensor.shape[-1])) for path_tensor in path_tensors]
+    batched_path_tensor = torch.stack(padded_path_tensors, 0)
+    padded_attention_masks = [torch.nn.functional.pad(attention_mask, (0, max_path_tensor_len - attention_mask.shape[-1])) for attention_mask in attention_masks]
+    batched_attention_mask = torch.stack(padded_attention_masks, 0)
+
+    # batched_attention_mask_tensor = torch.stack(attention_mask_tensor, 0)
+    # batched_attention_mask_tensor = batched_attention_mask_tensor.reshape(-1, batched_attention_mask_tensor.shape[2], batched_attention_mask_tensor.shape[3])
+
+    batched_target_tensor = torch.cat(target_tensors, 0)
+
+    return batched_path_tensor, batched_attention_mask, batched_target_tensor
 
 
 class CoarseDiscourseDataset(Dataset):
@@ -372,20 +402,20 @@ class ConversationPathBatchSampler(Sampler):
         return sum([len(self.indices_by_len[len_key]) for len_key in self.indices_by_len])
 
 
-def conversation_path_collate_fn(batch: Tuple[Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor, torch.LongTensor], ...]) -> Tuple[List[torch.LongTensor], List[torch.FloatTensor], torch.LongTensor]:
-    path_tensors, attention_mask_tensor, sequence_length_tensors, target_tensors, ids = [sample for sample in zip(*batch)]
-    batched_path_tensor = torch.stack(path_tensors, 0)
-    batched_path_tensor = batched_path_tensor.reshape(-1, batched_path_tensor.shape[2], batched_path_tensor.shape[3])
-    batched_attention_mask_tensor = torch.stack(attention_mask_tensor, 0)
-    batched_attention_mask_tensor = batched_attention_mask_tensor.reshape(-1, batched_attention_mask_tensor.shape[2], batched_attention_mask_tensor.shape[3])
-    batched_sequence_length_tensor = torch.stack(sequence_length_tensors, 0)
-    batched_sequence_length_tensor = batched_sequence_length_tensor.reshape(-1, batched_sequence_length_tensor.shape[2])
-    batched_target_tensor = torch.cat(target_tensors, 0)
-    # dim = 0 and select [0] element of output to get values, not indices
-    max_sequence_length_tensor = batched_sequence_length_tensor.max(0)[0]
-    batched_utterance_tensors = []
-    batched_attention_mask_tensors = []
-    for utterance_idx, max_sequence_length in enumerate(max_sequence_length_tensor):
-        batched_utterance_tensors.append(batched_path_tensor[:, utterance_idx, :max_sequence_length])
-        batched_attention_mask_tensors.append(batched_attention_mask_tensor[:, utterance_idx, :max_sequence_length])
-    return batched_utterance_tensors, batched_attention_mask_tensors, batched_target_tensor, ids
+# def conversation_path_collate_fn(batch: Tuple[Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor, torch.LongTensor], ...]) -> Tuple[List[torch.LongTensor], List[torch.FloatTensor], torch.LongTensor]:
+#     path_tensors, attention_mask_tensor, sequence_length_tensors, target_tensors, ids = [sample for sample in zip(*batch)]
+#     batched_path_tensor = torch.stack(path_tensors, 0)
+#     batched_path_tensor = batched_path_tensor.reshape(-1, batched_path_tensor.shape[2], batched_path_tensor.shape[3])
+#     batched_attention_mask_tensor = torch.stack(attention_mask_tensor, 0)
+#     batched_attention_mask_tensor = batched_attention_mask_tensor.reshape(-1, batched_attention_mask_tensor.shape[2], batched_attention_mask_tensor.shape[3])
+#     batched_sequence_length_tensor = torch.stack(sequence_length_tensors, 0)
+#     batched_sequence_length_tensor = batched_sequence_length_tensor.reshape(-1, batched_sequence_length_tensor.shape[2])
+#     batched_target_tensor = torch.cat(target_tensors, 0)
+#     # dim = 0 and select [0] element of output to get values, not indices
+#     max_sequence_length_tensor = batched_sequence_length_tensor.max(0)[0]
+#     batched_utterance_tensors = []
+#     batched_attention_mask_tensors = []
+#     for utterance_idx, max_sequence_length in enumerate(max_sequence_length_tensor):
+#         batched_utterance_tensors.append(batched_path_tensor[:, utterance_idx, :max_sequence_length])
+#         batched_attention_mask_tensors.append(batched_attention_mask_tensor[:, utterance_idx, :max_sequence_length])
+#     return batched_utterance_tensors, batched_attention_mask_tensors, batched_target_tensor, ids
