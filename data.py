@@ -298,6 +298,7 @@ class CoarseDiscourseDataset(Dataset):
     def __getitem__(self, index: int) -> Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor, torch.LongTensor]:
         path = self.paths[index]
         texts = [self.corpus.get_utterance(utterance_id).text for utterance_id in path]
+        texts = [' '.join([token[1:] for token in self.tokenizer.tokenize(text)][:self.max_tokenization_len // self.max_len]) for text in texts]
         path_text = self.tokenizer.sep_token.join(texts)
         tokenized_path = self.tokenizer(path_text, max_length=self.max_tokenization_len, truncation=True, return_tensors='pt')
         labels = [self.corpus.get_utterance(utterance_id).retrieve_meta('majority_type') for utterance_id in path]
