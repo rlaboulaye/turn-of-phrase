@@ -1,6 +1,6 @@
 # Turn of Phrase: Conversational Structure Pre-training
 
-This repository includes a python implementation of Turn of Phrase pre-training, a pre-training method used to further pre-train a MLM-pre-trained transformer-based language model for tasks that benefit from conversational discourse understanding.
+This repository includes a python implementation of Turn of Phrase pre-training, a pre-training method used to further pre-train an MLM-pre-trained transformer-based language model for tasks that benefit from conversational discourse understanding.
 
 ## Dependencies
 
