@@ -10,7 +10,7 @@ from torch import nn
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
-from transformers import AdamW, AutoModelForTokenClassification, AutoTokenizer, PreTrainedModel, get_linear_schedule_with_warmup
+from transformers import AdamW, AutoModelForTokenClassification, AutoTokenizer, get_linear_schedule_with_warmup
 
 from data import CoarseDiscourseDataset, ConversationPathBatchSampler, add_title_to_root, conversation_path_collate_fn
 from model import ConversationClassificationHRNN, UtteranceClassificationHRNN
@@ -29,7 +29,7 @@ parser.add_argument('-g', '--gpu', type=int, default=None,
                     help='index of gpu to use)')
 parser.add_argument('-l', '--learning-rate', type=float, default=2e-5,
                     help='base learning rate used')
-parser.add_argument('-b', '--batch-size', type=int, default=2,
+parser.add_argument('-b', '--batch-size', type=int, default=16,
                     help='training data batch size')
 parser.add_argument('-e', '--epochs', type=int, default=3,
                     help='number of epochs to run')
@@ -66,7 +66,7 @@ def main() -> None:
     val_dataset = CoarseDiscourseDataset(corpus, val_conversations, tokenizer, max_len=args.max_conversation_len, max_tokenization_len=args.utterance_max)
     val_dataset.label_encoder = train_dataset.label_encoder
     train_sampler = ConversationPathBatchSampler(args.batch_size, 1, train_dataset.get_indices_by_len())
-    val_sampler = ConversationPathBatchSampler(args.batch_size, 1, val_dataset.get_indices_by_len())
+    val_sampler = ConversationPathBatchSampler(args.batch_size * 4, 1, val_dataset.get_indices_by_len())
     train_loader = DataLoader(train_dataset, batch_sampler=train_sampler, collate_fn=conversation_path_collate_fn, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_sampler=val_sampler, collate_fn=conversation_path_collate_fn, pin_memory=True)
 
@@ -93,7 +93,7 @@ def train(loader: DataLoader, model: nn.Module, optimizer: Optimizer, scheduler:
     loss_fct = nn.CrossEntropyLoss()
     losses = []
     samples_seen = 0
-    for i, (path, attention_mask, targets) in enumerate(loader):
+    for i, (path, attention_mask, targets, ids) in enumerate(loader):
         path = path.squeeze(1).to(device, non_blocking=non_blocking)
         attention_mask = path.squeeze(1).to(device, non_blocking=non_blocking)
         targets = targets.to(device, non_blocking=non_blocking)
@@ -122,7 +122,7 @@ def validate(loader: DataLoader, model: nn.Module, device: torch.device, sep_tok
     with torch.no_grad():
         losses = []
         prediction_votes = {}
-        for i, (path, attention_mask, targets) in enumerate(loader):
+        for i, (path, attention_mask, targets, ids) in enumerate(loader):
             path = path.squeeze(1).to(device, non_blocking=non_blocking)
             attention_mask = path.squeeze(1).to(device, non_blocking=non_blocking)
             targets = targets.to(device, non_blocking=non_blocking)
@@ -131,7 +131,7 @@ def validate(loader: DataLoader, model: nn.Module, device: torch.device, sep_tok
                 output = model(input_ids=path, attention_mask=attention_mask)
                 logits = output.logits[path == sep_token_id]
                 loss = loss_fct(logits, targets.reshape(-1))
-                predictions = logits.argmax()
+                predictions = logits.argmax(1)
 
             losses.append(loss.item())
 
@@ -148,18 +148,17 @@ def validate(loader: DataLoader, model: nn.Module, device: torch.device, sep_tok
             #     predictions[-1] = loader.dataset.label_encoder.transform(predictions[-1])
             #
 
-        #     for id_batch, prediction_batch in zip(ids, predictions):
-        #         for utterance_id, prediction in zip(id_batch, prediction_batch):
-        #             if utterance_id in prediction_votes:
-        #                 prediction_votes[utterance_id].append(prediction)
-        #             else:
-        #                 prediction_votes[utterance_id] = [prediction]
-        # utterance_ids = list(prediction_votes.keys())
-        # predictions = np.array([mode(prediction_votes[utterance_id]).mode[0] for utterance_id in utterance_ids])
-        # labels = [loader.dataset.corpus.get_utterance(utterance_id).retrieve_meta('majority_type') for utterance_id in utterance_ids]
-        # targets = loader.dataset.label_encoder.transform(labels)
-        # accuracy = np.mean(targets == predictions)
-        precision, recall, fscore, _ = precision_recall_fscore_support(targets.to('cpu'), predictions.to('cpu'), average='weighted')
+            for utterance_id, prediction in zip([id for id_batch in ids for id in id_batch], predictions.to('cpu').numpy().tolist()):
+                if utterance_id in prediction_votes:
+                    prediction_votes[utterance_id].append(prediction)
+                else:
+                    prediction_votes[utterance_id] = [prediction]
+        utterance_ids = list(prediction_votes.keys())
+        predictions = np.array([mode(prediction_votes[utterance_id]).mode[0] for utterance_id in utterance_ids])
+        labels = [loader.dataset.corpus.get_utterance(utterance_id).retrieve_meta('majority_type') for utterance_id in utterance_ids]
+        targets = loader.dataset.label_encoder.transform(labels)
+        accuracy = np.mean(targets == predictions)
+        precision, recall, fscore, _ = precision_recall_fscore_support(targets, predictions, average='weighted')
         print('Validation Loss: {}, Acc: {}, Pre: {}, Rec: {}, F: {}'.format(np.mean(losses), accuracy, precision, recall, fscore))
 
 

@@ -34,7 +34,7 @@ parser.add_argument('--end-index', type=int, default=None,
                     help='end index for utterance.json')
 parser.add_argument('-l', '--learning-rate', type=float, default=2e-5,
                     help='base learning rate used')
-parser.add_argument('-b', '--batch-size', type=int, default=4,
+parser.add_argument('-b', '--batch-size', type=int, default=16,
                     help='training data batch size')
 parser.add_argument('-t', '--training-steps', type=int, default=100000,
                     help='number of training steps to run')
@@ -180,7 +180,7 @@ def train(loader: DataLoader, model: nn.Module, criterion: Callable, optimizer: 
     model.train()
 
     end = time.time()
-    for i, (path, attention_mask, targets) in enumerate(loader):
+    for i, (path, attention_mask, targets, _) in enumerate(loader):
         data_time.update(time.time() - end)
 
         non_blocking = device.type != 'cpu'

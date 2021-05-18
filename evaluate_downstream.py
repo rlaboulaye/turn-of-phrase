@@ -11,30 +11,24 @@ from torch import nn
 from torch.cuda.amp import GradScaler, autocast
 from torch.optim import Optimizer
 from torch.utils.data import DataLoader
-from transformers import AdamW, AutoModel, AutoTokenizer, PreTrainedModel, get_linear_schedule_with_warmup
+from transformers import AdamW, AutoModelForSequenceClassification, AutoTokenizer, get_linear_schedule_with_warmup
 
-from data import ConversationPathBatchSampler, WinningArgumentsDataset, add_title_to_root, conversation_path_collate_fn, filter_winning_arguments_corpus
-from model import ConversationClassificationHRNN
+from data import ConversationPathBatchSampler, ConversationsGoneAwryDataset, WinningArgumentsDataset, add_title_to_root, conversation_path_collate_fn, filter_winning_arguments_corpus
 
 
 WARMUP_RATIO = 0.1
 CLIPPING_GRADIENT_NORM = 1.0
 DISPLAY_STEPS = 100
-CORPUS = 'reddit-coarse-discourse-corpus'
 
 
 parser = ArgumentParser(description='Discourse Evaluation')
-parser.add_argument('-m', '--model-name', type=str, default='albert-base-v2',
+parser.add_argument('-m', '--model-name', type=str, default='google/bigbird-roberta-base',
                     help='name of pretrained model to use')
 parser.add_argument('-g', '--gpu', type=int, default=None,
                     help='index of gpu to use)')
-parser.add_argument('--hidden', type=int, default=200,
-                    help='hidden size of conversation model')
-parser.add_argument('--num-layers', type=int, default=2,
-                    help='number of layers in conversation model')
 parser.add_argument('-l', '--learning-rate', type=float, default=2e-5,
                     help='base learning rate used')
-parser.add_argument('-b', '--batch-size', type=int, default=2,
+parser.add_argument('-b', '--batch-size', type=int, default=16,
                     help='training data batch size')
 parser.add_argument('-e', '--epochs', type=int, default=3,
                     help='number of epochs to run')
@@ -42,11 +36,11 @@ parser.add_argument('-t', '--train-split', type=float, default=.8,
                     help='amount of data used for training')
 parser.add_argument('--max-conversation-len', type=int, default=11,
                     help='maximum conversation length')
-parser.add_argument('--utterance-max', type=int, default=256,
+parser.add_argument('--utterance-max', type=int, default=1024,
                     help='maximum utterance length')
 parser.add_argument('-p', '--pretrain-path', type=str, default=None,
                     help='path to pretrained model')
-parser.add_argument('-c', '--corpus', type=str, default='winning-args-corpus',
+parser.add_argument('-c', '--corpus', type=str, default='conversations-gone-awry-cmv-corpus',
                     help='evaluation corpus')
 
 
@@ -61,11 +55,17 @@ def main() -> None:
 
     corpus = Corpus(filename=download(args.corpus))
 
-    if args.corpus == 'winning-args-corpus':
+    if args.corpus == 'conversations-gone-awry-cmv-corpus':
+        DatasetClass = ConversationsGoneAwryDataset
+        n_classes = 1
+        criterion = nn.BCEWithLogitsLoss()
+    elif args.corpus == 'winning-args-corpus':
         corpus = filter_winning_arguments_corpus(corpus)
         DatasetClass = WinningArgumentsDataset
         n_classes = 1
         criterion = nn.BCEWithLogitsLoss()
+    else:
+        raise ValueError('Corpus {} not currently supported'.format(args.corpus))
 
     add_title_to_root(corpus)
 
@@ -85,19 +85,12 @@ def main() -> None:
 
     num_training_steps = args.epochs * len(train_dataset)
 
-    utterance_encoder = AutoModel.from_pretrained(args.model_name)
-    conversation_encoder = nn.LSTM(utterance_encoder.config.hidden_size, 200, args.num_layers)
-    pretrained_model = ConversationClassificationHRNN(utterance_encoder, conversation_encoder, 1)
-    pretrained_model.to(device)
+    model = AutoModelForSequenceClassification.from_pretrained(args.model_name, num_labels=n_classes)
+    model.to(device)
 
     if args.pretrain_path is not None:
         checkpoint = torch.load(args.pretrain_path, map_location=device)
-        pretrained_model.load_state_dict(checkpoint['state_dict'])
-
-    model = ConversationClassificationHRNN(utterance_encoder, conversation_encoder, n_classes)
-    model.hrnn = pretrained_model.hrnn
-    del pretrained_model
-    model.to(device)
+        model.bert.load_state_dict(checkpoint['state_dict'])
 
     optimizer = AdamW(model.parameters(), args.learning_rate)
     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=WARMUP_RATIO * num_training_steps, num_training_steps=num_training_steps)
@@ -114,12 +107,13 @@ def train(loader: DataLoader, model: nn.Module, criterion: Callable, optimizer: 
     accuracies = []
     samples_seen = 0
     for i, (path, attention_masks, targets, _) in enumerate(loader):
-        path = [utterance.to(device, non_blocking=non_blocking) for utterance in path]
-        attention_masks = [attention_mask.to(device, non_blocking=non_blocking) for attention_mask in attention_masks]
+        path = path.squeeze(1).to(device, non_blocking=non_blocking)
+        attention_mask = path.squeeze(1).to(device, non_blocking=non_blocking)
         targets = targets.to(device, non_blocking=non_blocking)
 
         with autocast():
-            logits = model(path, attention_masks)
+            output = model(input_ids=path, attention_mask=attention_mask)
+            logits = output.logits
             if logits.shape[-1] == 1:
                 logits = logits.reshape(-1)
                 accuracy = .5 * ((logits.sign() * (targets * 2 - 1)).mean() + 1)
@@ -148,12 +142,13 @@ def validate(loader: DataLoader, model: nn.Module, criterion: Callable, device: 
         losses = []
         accuracies = []
         for i, (path, attention_masks, targets, _) in enumerate(loader):
-            path = [utterance.to(device, non_blocking=non_blocking) for utterance in path]
-            attention_masks = [attention_mask.to(device, non_blocking=non_blocking) for attention_mask in attention_masks]
+            path = path.squeeze(1).to(device, non_blocking=non_blocking)
+            attention_mask = path.squeeze(1).to(device, non_blocking=non_blocking)
             targets = targets.to(device, non_blocking=non_blocking)
 
             with autocast():
-                logits = model(path, attention_masks)
+                output = model(input_ids=path, attention_mask=attention_mask)
+                logits = output.logits
                 if logits.shape[-1] == 1:
                     logits = logits.reshape(-1)
                     accuracy = .5 * ((logits.sign() * (targets * 2 - 1)).mean() + 1)

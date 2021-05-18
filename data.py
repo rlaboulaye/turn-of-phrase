@@ -222,11 +222,11 @@ class ConversationPathDataset(Dataset):
             path_text = self.tokenizer.sep_token.join(texts)
             conversation_path_neighborhood_texts.append(path_text)
         tokenized_path = self.tokenizer(conversation_path_neighborhood_texts, max_length=self.max_tokenization_len, padding=True, truncation=True, return_tensors='pt')
-        return tokenized_path.input_ids, tokenized_path.attention_mask, torch.LongTensor([0])
+        return tokenized_path.input_ids, tokenized_path.attention_mask, torch.LongTensor([0]), path
 
 
 def conversation_path_collate_fn(batch: Tuple[Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor, torch.LongTensor], ...]) -> Tuple[List[torch.LongTensor], List[torch.FloatTensor], torch.LongTensor]:
-    path_tensors, attention_masks, target_tensors = [sample for sample in zip(*batch)]
+    path_tensors, attention_masks, target_tensors, ids = [sample for sample in zip(*batch)]
     max_path_tensor_len = max([path_tensor.shape[-1] for path_tensor in path_tensors])
     padded_path_tensors = [torch.nn.functional.pad(path_tensor, (0, max_path_tensor_len - path_tensor.shape[-1])) for path_tensor in path_tensors]
     batched_path_tensor = torch.stack(padded_path_tensors, 0)
@@ -238,7 +238,7 @@ def conversation_path_collate_fn(batch: Tuple[Tuple[torch.LongTensor, torch.Floa
 
     batched_target_tensor = torch.cat(target_tensors, 0)
 
-    return batched_path_tensor, batched_attention_mask, batched_target_tensor
+    return batched_path_tensor, batched_attention_mask, batched_target_tensor, ids
 
 
 class CoarseDiscourseDataset(Dataset):
@@ -303,7 +303,7 @@ class CoarseDiscourseDataset(Dataset):
         tokenized_path = self.tokenizer(path_text, max_length=self.max_tokenization_len, truncation=True, return_tensors='pt')
         labels = [self.corpus.get_utterance(utterance_id).retrieve_meta('majority_type') for utterance_id in path]
         targets = torch.LongTensor(self.label_encoder.transform(labels))
-        return tokenized_path.input_ids, tokenized_path.attention_mask, targets
+        return tokenized_path.input_ids, tokenized_path.attention_mask, targets, path
 
 
 class WinningArgumentsDataset(Dataset):
@@ -342,13 +342,45 @@ class WinningArgumentsDataset(Dataset):
     def __getitem__(self, index: int) -> Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor, torch.LongTensor]:
         path = self.paths[index]
         texts = [self.corpus.get_utterance(utterance_id).text for utterance_id in path]
-        sequence_lengths = [len(self.tokenizer.tokenize(text)) for text in texts]
-        encodings = [self.tokenizer(text, max_length=self.max_tokenization_len, padding='max_length', truncation=True) for text in texts]
-        path_tensor = torch.LongTensor([encoding['input_ids'] for encoding in encodings]).unsqueeze(0)
-        attention_mask_tensor = torch.LongTensor([encoding['attention_mask'] for encoding in encodings]).unsqueeze(0)
-        sequence_length_tensor = torch.LongTensor(sequence_lengths).unsqueeze(0)
-        target_tensor = torch.FloatTensor([self.corpus.get_utterance(path[-1]).retrieve_meta('success')])
-        return path_tensor, attention_mask_tensor, sequence_length_tensor, target_tensor, path
+        texts = [' '.join([token[1:] for token in self.tokenizer.tokenize(text)][:self.max_tokenization_len // self.max_len]) for text in texts]
+        path_text = self.tokenizer.sep_token.join(texts)
+        tokenized_path = self.tokenizer(path_text, max_length=self.max_tokenization_len, truncation=True, return_tensors='pt')
+        targets = torch.FloatTensor([self.corpus.get_utterance(path[-1]).retrieve_meta('success')])
+        return tokenized_path.input_ids, tokenized_path.attention_mask, targets, path
+
+
+class ConversationsGoneAwryDataset(Dataset):
+    """docstring for ConversationsGoneAwryDataset"""
+    def __init__(self, corpus: Corpus, conversations: List[Conversation], tokenizer: PreTrainedTokenizerBase, max_len: int=8, max_tokenization_len: int=256) -> None:
+        super(ConversationsGoneAwryDataset, self).__init__()
+        self.corpus = corpus
+        self.tokenizer = tokenizer
+        self.max_len = max_len
+        self.max_tokenization_len = max_tokenization_len
+        self.paths = []
+        self.indices_by_len = [[] for i in range(self.max_len)]
+        for conversation in conversations:
+            path = conversation.get_root_to_leaf_paths()[0]
+            id_path = [utterance.id for utterance in path]
+            # truncate path to max
+            id_path = id_path[:self.max_len]
+            self.indices_by_len[len(id_path) - 1].append(len(self.paths))
+            self.paths.append(id_path)
+
+    def get_indices_by_len(self) -> Dict[int, List[int]]:
+        return {i + 1: self.indices_by_len[i] for i in range(len(self.indices_by_len))}
+
+    def __len__(self) -> int:
+        return len(self.paths)
+
+    def __getitem__(self, index: int) -> Tuple[torch.LongTensor, torch.FloatTensor, torch.LongTensor, torch.LongTensor]:
+        path = self.paths[index]
+        texts = [self.corpus.get_utterance(utterance_id).text for utterance_id in path]
+        texts = [' '.join([token[1:] for token in self.tokenizer.tokenize(text)][:self.max_tokenization_len // self.max_len]) for text in texts]
+        path_text = self.tokenizer.sep_token.join(texts)
+        tokenized_path = self.tokenizer(path_text, max_length=self.max_tokenization_len, truncation=True, return_tensors='pt')
+        targets = torch.FloatTensor([self.corpus.get_conversation(path[0]).retrieve_meta('has_removed_comment')])
+        return tokenized_path.input_ids, tokenized_path.attention_mask, targets, path
 
 
 class PolitenessDataset(Dataset):
